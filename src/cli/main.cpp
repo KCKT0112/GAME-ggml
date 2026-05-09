@@ -89,7 +89,7 @@ void print_usage(const char * argv0) {
         "  --seg-radius <frames>                  Boundary decoding radius                 (default: 2)\n"
         "  --est-threshold <float>                Note presence threshold                  (default: 0.2)\n"
         "  --t0 <float>                           D3PM initial t                           (default: 0.0)\n"
-        "  --nsteps <int>                         D3PM sampling steps                      (default: 8)\n"
+        "  --nsteps <int>                         D3PM sampling steps                      (default: 1)\n"
         "  --seed <uint64>                        RNG seed (0 = random_device)             (default: 0)\n"
         "  --pitch-format name|number             Text output pitch format                 (default: name)\n"
         "  --round-pitch                          Round pitch to integer in text output    (default: false)\n"
@@ -164,7 +164,7 @@ int cmd_extract(int argc, char ** argv) {
     int   seg_radius  = 2;
     float est_thr     = 0.2f;
     float t0          = 0.0f;
-    int   nsteps      = 8;
+    int   nsteps      = 1;
     std::uint64_t seed = 0;
     std::string pitch_format = "name";
     bool round_pitch = false;

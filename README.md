@@ -1,8 +1,6 @@
 # GAME ggml backend
 
-[![ggml_backend CI](https://github.com/openvpi/GAME/actions/workflows/ggml_backend.yml/badge.svg)](https://github.com/openvpi/GAME/actions/workflows/ggml_backend.yml)
-
-Native C++ inference for the [GAME](../) singing-voice-to-MIDI model, built on
+Native C++ inference for the [GAME](https://github.com/openvpi/GAME) singing-voice-to-MIDI model, built on
 [ggml](https://github.com/ggerganov/ggml).  Runs on CPU, Metal (default on
 Apple Silicon), CUDA, or Vulkan.  Drop-in replacement for
 `python infer.py extract` with no Python dependency at runtime.
@@ -107,6 +105,71 @@ Inspect the result:
 | `--seed`              | *(new)* — 0 pulls a random seed from the OS |
 | `--pitch-format`      | `--pitch-format` |
 | `--round-pitch`       | `--round-pitch` |
+| `--rng-replay <path>` | *(new)* — replay D3PM random numbers from a file for bit-exact parity with PyTorch |
+
+## Performance
+
+Measured on Apple M4 (macOS, 16-core Apple Silicon), 3 runs per side under
+`/usr/bin/time -l`, fresh subprocess each run (so peak RSS is clean).  Input:
+`28.wav` — 216.0 s mono, resampled to 44.1 kHz.
+
+Both sides consume the exact same random-number stream via `--rng-replay`
+(see `scripts/align_demo.py`), so the note lists are bit-exact aligned.
+
+```
+                          min      mean       max
+PyTorch wall (s)        17.73     18.05     18.65   (MPS via Lightning)
+ggml    wall (s)         9.11      9.28      9.62   (Metal, default binary)
+Speedup                                    1.94 ×
+
+PyTorch peak RSS      984.9 MB  985.7 MB  986.9 MB
+ggml    peak RSS      336.0 MB  336.2 MB  336.4 MB
+Memory ratio                                2.93 ×
+
+PyTorch notes: 458  ┐
+ggml    notes: 458  ├── matched 1-to-1, max |Δpitch| = 0.000 semitone
+                     ┘
+```
+
+Real-time factor: **23.3×** (ggml) vs 11.97× (PyTorch).
+
+### Per-stage breakdown (ONNX-aligned)
+
+Run with `GAME_GGML_PROFILE=1` to print a per-chunk breakdown:
+
+```
+encoder     ~0.17 s  (~16%)   waveform → x_seg/x_est  (mel + spec_proj + 4× EBF)
+segmenter   ~0.79 s  (~78%)   x_seg → boundaries       (8× D3PM sampling steps)
+estimator   ~0.06 s  (~ 6%)   x_est + regions → notes  (4× JEBF + joint attn)
+```
+
+Segmenter dominates because D3PM loops it 8 times by default.  Pass
+`--nsteps 4` to halve the run time at a small quality cost.
+
+## Reproducing the benchmark
+
+```bash
+# 1. Resample to 44.1 kHz / mono (if not already)
+python3 -c "
+import librosa, soundfile as sf
+y, _ = librosa.load('28.wav', sr=44100, mono=True)
+sf.write('/tmp/28_44100.wav', y, 44100, subtype='PCM_16')"
+
+# 2. Capture PyTorch's D3PM RNG stream (also produces a reference MIDI)
+python3 ggml_backend/scripts/align_demo.py /tmp/28_44100.wav \
+    -m GAME-pt-1.0-small/model.pt \
+    -g ggml_backend/assets/game_small.gguf \
+    --cli ggml_backend/build/bin/game_ggml_cli \
+    -l zh -o /tmp/align_out
+
+# 3. Run the 3-per-side subprocess-isolated benchmark
+python3 ggml_backend/scripts/benchmark_align.py /tmp/28_44100.wav \
+    -m GAME-pt-1.0-small/model.pt \
+    -g ggml_backend/assets/game_small.gguf \
+    --cli ggml_backend/build/bin/game_ggml_cli \
+    --rng /tmp/align_out/align_rng.bin \
+    -l zh -o /tmp/bench_out --runs 3
+```
 
 ## Using as a third-party library
 
@@ -201,5 +264,5 @@ after download.  To update a dependency, change its `GIT_TAG` in
 
 ## License
 
-MIT — same as the parent [GAME project](../LICENSE).  Redistributions should
+MIT — same as the parent [GAME project](https://github.com/openvpi/GAME).  Redistributions should
 also carry the upstream license notices listed in the table above.

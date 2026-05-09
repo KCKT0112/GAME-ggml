@@ -169,7 +169,7 @@ def main() -> int:
     ap.add_argument("-o", "--out-dir",  type=pathlib.Path, required=True)
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--t0",   type=float, default=0.0)
-    ap.add_argument("--nsteps", type=int, default=8)
+    ap.add_argument("--nsteps", type=int, default=1)
     ap.add_argument("--seg-threshold", type=float, default=0.2)
     ap.add_argument("--seg-radius",    type=int,   default=2)
     ap.add_argument("--est-threshold", type=float, default=0.2)

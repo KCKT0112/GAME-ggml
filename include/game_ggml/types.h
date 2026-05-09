@@ -25,7 +25,7 @@ struct InferParams {
     //   ts = [t0, t0 + dt, t0 + 2*dt, ..., 1 - dt]   with  dt = (1 - t0) / nsteps.
     std::vector<float> d3pm_ts;
     float              d3pm_t0     = 0.0f;
-    int                d3pm_nsteps = 8;
+    int                d3pm_nsteps = 1;   // single-shot denoising; 8 for higher quality
 
     // Boundary decoding.
     float boundary_threshold = 0.2f;

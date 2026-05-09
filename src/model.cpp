@@ -302,12 +302,16 @@ inline float sigmoid(float x) { return 1.0f / (1.0f + std::exp(-x)); }
 
 // Simple profiler, gated by the GAME_GGML_PROFILE env var.  Accumulates
 // wall-time per stage across chunks; emits a summary to stderr on destruction.
+// Stage boundaries follow the ONNX export contract (deployment/exporter.py):
+//   * "encoder" = waveform → (x_seg, x_est, maskT); absorbs mel + spec_proj
+//   * "segmenter" = x_seg + embeddings → boundary_logits, repeated per D3PM step
+//   * "estimator" = x_est + regions → note logits
 struct StageProfiler {
     bool enabled;
     using clock = std::chrono::steady_clock;
     using dur   = std::chrono::duration<double>;
 
-    double mel_s = 0.0, encoder_s = 0.0, segmenter_s = 0.0, estimator_s = 0.0, decode_s = 0.0;
+    double encoder_s = 0.0, segmenter_s = 0.0, estimator_s = 0.0, decode_s = 0.0;
     int    n_segmenter_steps = 0;
 
     StageProfiler() {
@@ -327,7 +331,6 @@ struct StageProfiler {
         }
     };
 
-    Scope scope_mel()       { return Scope(this, &mel_s); }
     Scope scope_encoder()   { return Scope(this, &encoder_s); }
     Scope scope_segmenter() { if (enabled) ++n_segmenter_steps; return Scope(this, &segmenter_s); }
     Scope scope_estimator() { return Scope(this, &estimator_s); }
@@ -335,17 +338,15 @@ struct StageProfiler {
 
     ~StageProfiler() {
         if (!enabled) return;
-        const double total = mel_s + encoder_s + segmenter_s + estimator_s + decode_s;
+        const double total = encoder_s + segmenter_s + estimator_s + decode_s;
         std::fprintf(stderr,
-            "\n[GAME_GGML_PROFILE] per-chunk stage timings (one clip)\n"
-            "    mel         %7.3f s  (%5.1f %%)\n"
-            "    encoder     %7.3f s  (%5.1f %%)\n"
+            "\n[GAME_GGML_PROFILE] per-chunk stage timings (ONNX-aligned)\n"
+            "    encoder     %7.3f s  (%5.1f %%)   mel + spec_proj + 4× EBF\n"
             "    segmenter   %7.3f s  (%5.1f %%)   over %d D3PM steps\n"
             "    estimator   %7.3f s  (%5.1f %%)\n"
             "    decode/cpu  %7.3f s  (%5.1f %%)\n"
             "    ------------------------\n"
             "    total       %7.3f s\n",
-            mel_s,       100.0 * mel_s        / total,
             encoder_s,   100.0 * encoder_s    / total,
             segmenter_s, 100.0 * segmenter_s  / total, n_segmenter_steps,
             estimator_s, 100.0 * estimator_s  / total,
@@ -368,15 +369,16 @@ InferResult Model::Impl::infer_with_rng(
     const int T = mel_extractor->num_frames(n_samples);
     if (T <= 0) throw InvalidArgument("waveform too short for one mel frame");
 
-    // --- 1) mel
-    std::vector<float> mel;
-    { auto _ = prof.scope_mel();
-      mel = mel_extractor->forward(waveform, n_samples); }          // [T, 80]
-
-    // --- 2) encoder
+    // --- 1) encoder (waveform → x_seg, x_est)  [ONNX: encoder.onnx]
+    //        covers: mel extraction, spectrogram_projection, 4× EBF blocks,
+    //        output split.  The mel sub-stage runs on CPU (pocketfft STFT
+    //        + mel filterbank mul + log); everything after is on the backend.
     std::vector<float> x_seg_host, x_est_host;
-    { auto _ = prof.scope_encoder();
-      run_encoder(mel.data(), T, x_seg_host, x_est_host); }
+    {
+        auto _ = prof.scope_encoder();
+        auto mel = mel_extractor->forward(waveform, n_samples);          // [T, 80]
+        run_encoder(mel.data(), T, x_seg_host, x_est_host);
+    }
 
     // --- 3) D3PM loop (segmenter)
     std::vector<float> ts = params.d3pm_ts.empty()
