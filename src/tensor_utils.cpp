@@ -36,10 +36,22 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
     gp.no_alloc = true;
     gp.ctx = &ctx;
 
-    gguf_context * gctx = gguf_init_from_file(gguf.path().c_str(), gp);
+    // Re-parse the GGUF (via reopen, so either path or memory works) to
+    // populate ggml tensor handles in our fresh context.  The original
+    // GgufFile's gguf_context is metadata-only.
+    gguf_context * gctx = nullptr;
+    {
+        FILE * fp = gguf.reopen();
+        if (!fp) {
+            ggml_free(ctx);
+            throw GgufError("failed to reopen GGUF for tensor loading: " + gguf.path());
+        }
+        gctx = gguf_init_from_file_ptr(fp, gp);
+        std::fclose(fp);
+    }
     if (!gctx) {
         ggml_free(ctx);
-        throw GgufError("failed to re-open GGUF for tensor loading: " + gguf.path());
+        throw GgufError("failed to parse GGUF tensor table: " + gguf.path());
     }
 
     // --- 2. Allocate backend buffer covering all tensors in ctx.
@@ -51,12 +63,12 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
     }
 
     // --- 3. Upload tensor payloads directly from the file.
-    FILE * f = std::fopen(gguf.path().c_str(), "rb");
+    FILE * f = gguf.reopen();
     if (!f) {
         ggml_backend_buffer_free(buf);
         gguf_free(gctx);
         ggml_free(ctx);
-        throw GgufError("failed to open GGUF payload file: " + gguf.path());
+        throw GgufError("failed to reopen GGUF payload source: " + gguf.path());
     }
 
     const size_t data_offset = gguf_get_data_offset(gctx);

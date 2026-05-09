@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GAME ggml — Browser Demo</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; max-width: 840px; margin: 2em auto; padding: 0 1em; }
+  h1   { margin-top: 0; }
+  .zone { border: 2px dashed #888; border-radius: 8px; padding: 2em; text-align: center; color: #555; }
+  .zone.drag { background: #fafafa; border-color: #555; color: #222; }
+  button { padding: 0.5em 1em; font-size: 1em; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  #log { white-space: pre-wrap; background: #1e1e1e; color: #ddd; padding: 1em;
+          border-radius: 6px; font: 12px/1.4 ui-monospace, Menlo, monospace;
+          max-height: 260px; overflow-y: auto; }
+  #roll { border: 1px solid #ccc; display: block; margin: 1em auto; }
+  .row  { display: flex; gap: 1em; align-items: center; margin: 1em 0; flex-wrap: wrap; }
+  label { font-weight: 500; }
+  select, input[type=number] { padding: 0.25em 0.5em; }
+  .muted { color: #888; font-size: 0.9em; }
+  .stat  { display: inline-block; background: #eef; padding: 0.3em 0.6em;
+           border-radius: 4px; margin-right: 0.5em; }
+</style>
+</head>
+<body>
+
+<h1>GAME ggml — browser demo</h1>
+<p class="muted">
+  Singing-voice → MIDI transcription, running 100% client-side in WASM.
+  No server, no uploads.
+  <span id="buildStats"></span>
+</p>
+
+<div class="row">
+  <label>Model:</label>
+  <select id="modelChoice">
+    <option value="q8_0" selected>Q8_0 · smallest (~16 MB)</option>
+    <option value="f16">F16 · better quality (~25 MB)</option>
+    <option value="f32">F32 · reference (~48 MB)</option>
+  </select>
+
+  <label>Language:</label>
+  <select id="language">
+    <option value="4">zh</option>
+    <option value="1">en</option>
+    <option value="2">ja</option>
+    <option value="3">yue</option>
+    <option value="0">unknown</option>
+  </select>
+
+  <label>D3PM steps:</label>
+  <input id="nsteps" type="number" min="1" max="32" value="1" style="width:4em">
+
+  <label>Seed:</label>
+  <input id="seed" type="number" min="0" max="4294967295" value="42" style="width:8em">
+
+  <button id="loadBtn">Load model</button>
+  <span id="modelStatus" class="muted">(click Load)</span>
+</div>
+
+<div id="dropZone" class="zone">
+  <strong>Drop a WAV / MP3 / FLAC / M4A here</strong><br>
+  <span class="muted">or click to choose</span>
+  <input id="file" type="file" accept="audio/*" style="display:none">
+</div>
+
+<div class="row">
+  <button id="runBtn" disabled>Transcribe</button>
+  <button id="dlBtn"  disabled>Download MIDI</button>
+  <button id="dlTxtBtn" disabled>Download TXT</button>
+  <span id="runStatus" class="muted"></span>
+</div>
+
+<canvas id="roll" width="820" height="220"></canvas>
+<pre id="log">[ready]</pre>
+
+<script type="module" src="./demo.js"></script>
+</body>
+</html>

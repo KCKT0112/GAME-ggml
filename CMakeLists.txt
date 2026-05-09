@@ -11,12 +11,32 @@ option(GAME_GGML_CUDA        "Enable ggml CUDA backend"     OFF)
 option(GAME_GGML_VULKAN      "Enable ggml Vulkan backend"   OFF)
 option(GAME_GGML_BUILD_CLI   "Build game_ggml_cli executable"   ON)
 option(GAME_GGML_BUILD_TESTS "Build unit tests (requires GoogleTest via FetchContent)" OFF)
+option(GAME_GGML_BUILD_WASM  "Build the WASM module (requires emcmake)" OFF)
 
 # On Apple, default to Metal backend on. Use GAME_GGML_METAL to override.
 if(APPLE)
     option(GAME_GGML_METAL "Enable ggml Metal backend" ON)
 else()
     option(GAME_GGML_METAL "Enable ggml Metal backend" OFF)
+endif()
+
+# -----------------------------------------------------------------------------
+# Emscripten: force off all the hardware backends + CLI + tests; turn on WASM.
+# -----------------------------------------------------------------------------
+if(EMSCRIPTEN)
+    set(GAME_GGML_METAL        OFF CACHE BOOL "" FORCE)
+    set(GAME_GGML_CUDA         OFF CACHE BOOL "" FORCE)
+    set(GAME_GGML_VULKAN       OFF CACHE BOOL "" FORCE)
+    set(GAME_GGML_BUILD_CLI    OFF CACHE BOOL "" FORCE)
+    set(GAME_GGML_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
+    set(GAME_GGML_BUILD_WASM   ON  CACHE BOOL "" FORCE)
+    # ggml itself: disable native / AVX / etc; WASM SIMD via -msimd128.
+    set(GGML_NATIVE            OFF CACHE BOOL "" FORCE)
+    set(GGML_CPU_HBM           OFF CACHE BOOL "" FORCE)
+    set(GGML_OPENMP            OFF CACHE BOOL "" FORCE)
+    set(GGML_BLAS              OFF CACHE BOOL "" FORCE)
+    # WebAssembly SIMD128 (stable across Chrome/Safari/Firefox since 2022).
+    add_compile_options(-msimd128)
 endif()
 
 # -----------------------------------------------------------------------------
@@ -138,6 +158,33 @@ endif()
 if(GAME_GGML_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# -----------------------------------------------------------------------------
+# WASM module (Emscripten only)
+# -----------------------------------------------------------------------------
+if(GAME_GGML_BUILD_WASM)
+    add_executable(game_ggml_wasm src/wasm_bindings.cpp)
+    target_link_libraries(game_ggml_wasm PRIVATE game_ggml::game_ggml)
+    target_compile_options(game_ggml_wasm PRIVATE ${GAME_GGML_WARN_FLAGS})
+    set_target_properties(game_ggml_wasm PROPERTIES
+        OUTPUT_NAME "game_ggml"
+        SUFFIX ".js"
+    )
+    target_link_options(game_ggml_wasm PRIVATE
+        "-lembind"
+        "-sMODULARIZE=1"
+        "-sEXPORT_NAME=createGameGGML"
+        "-sENVIRONMENT=web,worker,node"
+        "-sINITIAL_MEMORY=64MB"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sMAXIMUM_MEMORY=2GB"
+        "-sSTACK_SIZE=2MB"
+        "-sEXPORTED_FUNCTIONS=_malloc,_free"
+        "-sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPF32"
+        "-sFORCE_FILESYSTEM=1"
+        "-sNO_EXIT_RUNTIME=1"
+    )
 endif()
 
 # -----------------------------------------------------------------------------

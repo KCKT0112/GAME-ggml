@@ -46,6 +46,7 @@ struct Model::Impl {
 
     // Load + bind.
     static std::unique_ptr<Impl> load(const std::string & path);
+    static std::unique_ptr<Impl> load_from_memory(const void * data, std::size_t n_bytes);
 
     // Main entry — used both by Model::infer (wraps its own MT19937Rng) and
     // by the test suite (passes an InjectedRng).
@@ -55,6 +56,9 @@ struct Model::Impl {
         internal::IRandomSource & rng);
 
 private:
+    // Common post-load setup shared by `load` and `load_from_memory`.
+    void init_from_gguf();
+
     // Pipeline stages.
     void run_encoder(const float * mel, int T,
                      std::vector<float> & x_seg_out,

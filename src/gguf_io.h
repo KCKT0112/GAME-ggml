@@ -6,6 +6,7 @@
 #include "game_ggml/errors.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
@@ -26,6 +27,11 @@ public:
     // the heavy data isn't touched.
     static GgufFile open(const std::string & path);
 
+    // Open a GGUF file from an in-memory byte buffer.  Takes ownership of
+    // the buffer so it stays alive for subsequent tensor-data reads.  Used
+    // by the WASM bindings (where the file lives in JS ArrayBuffer land).
+    static GgufFile from_memory(std::vector<std::uint8_t> blob);
+
     ~GgufFile();
     GgufFile(GgufFile &&) noexcept;
     GgufFile & operator=(GgufFile &&) noexcept;
@@ -35,8 +41,15 @@ public:
     // Raw handle.  The GGUF reader owns it; borrow for short lifetimes only.
     gguf_context * handle() const noexcept { return ctx_; }
 
-    // File path it was loaded from, for diagnostics.
+    // File path it was loaded from, for diagnostics (returns "<memory>" when
+    // constructed via from_memory).
     const std::string & path() const noexcept { return path_; }
+
+    // Returns a fresh FILE* positioned at the start of the GGUF.  For
+    // path-backed instances this is `fopen(path, "rb")`; for memory-backed
+    // instances it wraps the internal buffer via `fmemopen`.  Caller is
+    // responsible for closing.  Returns nullptr on failure.
+    std::FILE * reopen() const;
 
     // ---- KV accessors (all throw GgufError on missing / wrong-type) ----
     bool        has(const std::string & key) const;
@@ -71,8 +84,9 @@ public:
 private:
     GgufFile() = default;
 
-    gguf_context * ctx_ = nullptr;
-    std::string    path_;
+    gguf_context *              ctx_  = nullptr;
+    std::string                 path_;
+    std::vector<std::uint8_t>   blob_;   // present when loaded from memory
 };
 
 // Parse a `GameModelConfig` from the KV data of an opened GGUF file.

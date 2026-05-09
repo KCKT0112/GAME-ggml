@@ -31,12 +31,44 @@ GgufFile GgufFile::open(const std::string & path) {
     return f;
 }
 
+GgufFile GgufFile::from_memory(std::vector<std::uint8_t> blob) {
+    if (blob.empty()) {
+        throw GgufError("from_memory called with empty buffer");
+    }
+    // fmemopen lets gguf use its normal fread/fseek path without us having to
+    // touch ggml internals.  Available on macOS/Linux/Emscripten/MSYS.
+    FILE * fp = fmemopen(blob.data(), blob.size(), "rb");
+    if (!fp) throw GgufError("fmemopen failed");
+
+    gguf_init_params params{};
+    params.no_alloc = true;
+    params.ctx      = nullptr;
+    gguf_context * ctx = gguf_init_from_file_ptr(fp, params);
+    std::fclose(fp);
+    if (!ctx) throw GgufError("failed to parse GGUF from memory");
+
+    GgufFile f;
+    f.ctx_  = ctx;
+    f.path_ = "<memory>";
+    f.blob_ = std::move(blob);
+    return f;
+}
+
+std::FILE * GgufFile::reopen() const {
+    if (!blob_.empty()) {
+        // Cast away const: fmemopen does not modify the buffer when opened
+        // with "rb", but its prototype takes a non-const pointer.
+        return fmemopen(const_cast<std::uint8_t *>(blob_.data()), blob_.size(), "rb");
+    }
+    return std::fopen(path_.c_str(), "rb");
+}
+
 GgufFile::~GgufFile() {
     if (ctx_) gguf_free(ctx_);
 }
 
 GgufFile::GgufFile(GgufFile && other) noexcept
-    : ctx_(other.ctx_), path_(std::move(other.path_)) {
+    : ctx_(other.ctx_), path_(std::move(other.path_)), blob_(std::move(other.blob_)) {
     other.ctx_ = nullptr;
 }
 
@@ -45,6 +77,7 @@ GgufFile & GgufFile::operator=(GgufFile && other) noexcept {
         if (ctx_) gguf_free(ctx_);
         ctx_  = other.ctx_;
         path_ = std::move(other.path_);
+        blob_ = std::move(other.blob_);
         other.ctx_ = nullptr;
     }
     return *this;

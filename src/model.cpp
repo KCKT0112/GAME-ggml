@@ -37,6 +37,12 @@ Model Model::load(const std::string & gguf_path) {
     return m;
 }
 
+Model Model::load_from_memory(const void * data, std::size_t n_bytes) {
+    Model m;
+    m.impl_ = Impl::load_from_memory(data, n_bytes);
+    return m;
+}
+
 const GameModelConfig & Model::config() const noexcept { return impl_->cfg; }
 Model::Impl & Model::internals() noexcept { return *impl_; }
 
@@ -58,33 +64,48 @@ Model::Impl::~Impl() {
 
 std::unique_ptr<Model::Impl> Model::Impl::load(const std::string & path) {
     auto impl = std::make_unique<Impl>();
-    impl->gguf    = std::make_unique<internal::GgufFile>(internal::GgufFile::open(path));
-    impl->cfg     = internal::load_config(*impl->gguf);
-    impl->backend = internal::init_best_backend();
-    impl->weights = std::make_unique<internal::LoadedWeights>(
-        internal::LoadedWeights::load_all(*impl->gguf, impl->backend));
+    impl->gguf = std::make_unique<internal::GgufFile>(internal::GgufFile::open(path));
+    impl->init_from_gguf();
+    return impl;
+}
+
+std::unique_ptr<Model::Impl> Model::Impl::load_from_memory(const void * data, std::size_t n_bytes) {
+    if (!data || n_bytes == 0) throw InvalidArgument("empty GGUF buffer");
+    std::vector<std::uint8_t> blob(n_bytes);
+    std::memcpy(blob.data(), data, n_bytes);
+
+    auto impl = std::make_unique<Impl>();
+    impl->gguf = std::make_unique<internal::GgufFile>(
+        internal::GgufFile::from_memory(std::move(blob)));
+    impl->init_from_gguf();
+    return impl;
+}
+
+void Model::Impl::init_from_gguf() {
+    cfg     = internal::load_config(*gguf);
+    backend = internal::init_best_backend();
+    weights = std::make_unique<internal::LoadedWeights>(
+        internal::LoadedWeights::load_all(*gguf, backend));
 
     // Top-level weights.
-    impl->w_spec_proj = impl->weights->get("spectrogram_projection.weight");
-    impl->b_spec_proj = impl->weights->get("spectrogram_projection.bias");
+    w_spec_proj = weights->get("spectrogram_projection.weight");
+    b_spec_proj = weights->get("spectrogram_projection.bias");
 
     // Sub-models.
-    impl->encoder_w   = internal::bind_encoder_weights(*impl->weights, impl->cfg.encoder, "encoder");
-    impl->segmenter_w = internal::bind_segmenter_weights(*impl->weights, impl->cfg);
-    impl->estimator_w = internal::bind_estimator_weights(*impl->weights, impl->cfg);
+    encoder_w   = internal::bind_encoder_weights(*weights, cfg.encoder, "encoder");
+    segmenter_w = internal::bind_segmenter_weights(*weights, cfg);
+    estimator_w = internal::bind_estimator_weights(*weights, cfg);
 
     // Front-end.
     MelConfig mc;
-    mc.sample_rate = impl->cfg.inference.audio_sample_rate;
-    mc.n_fft       = impl->cfg.inference.fft_size;
-    mc.win_length  = impl->cfg.inference.win_size;
-    mc.hop_length  = impl->cfg.inference.hop_size;
-    mc.n_mels      = impl->cfg.inference.n_mels;
-    mc.fmin        = impl->cfg.inference.fmin;
-    mc.fmax        = impl->cfg.inference.fmax;
-    impl->mel_extractor = std::make_unique<MelExtractor>(mc);
-
-    return impl;
+    mc.sample_rate = cfg.inference.audio_sample_rate;
+    mc.n_fft       = cfg.inference.fft_size;
+    mc.win_length  = cfg.inference.win_size;
+    mc.hop_length  = cfg.inference.hop_size;
+    mc.n_mels      = cfg.inference.n_mels;
+    mc.fmin        = cfg.inference.fmin;
+    mc.fmax        = cfg.inference.fmax;
+    mel_extractor = std::make_unique<MelExtractor>(mc);
 }
 
 // ============================================================================

@@ -57,6 +57,49 @@ GAME_ARCH = "game-me"
 GAME_ARCH_VERSION = 1
 
 
+# Quantization types this converter can emit.  Order = increasing compression.
+_DTYPE_TAGS = {
+    "f32":  gguf.GGMLQuantizationType.F32,
+    "f16":  gguf.GGMLQuantizationType.F16,
+    "q8_0": gguf.GGMLQuantizationType.Q8_0,
+}
+
+
+def _should_compress(name: str, arr: np.ndarray, dtype: str) -> bool:
+    """Return True when this tensor is safe to convert to a lower precision.
+
+    Heuristic: big 2-D+ weights (≥ 4096 elements) that are NOT norms, biases,
+    or layer-scale vectors.  These rules mirror what llama.cpp does: small
+    scale / shift tensors stay F32 so numerical stability is preserved.
+
+    For Q8_0 we additionally require the innermost dim to be a multiple of
+    32 (Q8's block size).  1×1 pointwise convs (shape `(out, in, 1)`) thus
+    stay F32 — they're a small minority of the model.
+    """
+    if arr.ndim < 2 or arr.size < 4096:
+        return False
+
+    sensitive_suffixes = (
+        ".bias", ".scale",
+        ".norm.weight",   "_norm.weight",
+        ".a_norm.weight", ".c_norm.weight",
+        ".q_norm.weight", ".k_norm.weight",
+        "latent_norm.weight", "output_norm.weight", "output_norm_x.weight",
+        "output_norm_pool.weight",
+        "noise_embedding.embedding.weight",      # (3, D) cyclic table — tiny
+        "region_embedding.embedding.weight",
+        "pool_token_gen.emb",
+    )
+    if name.endswith(sensitive_suffixes):
+        return False
+
+    if dtype == "q8_0":
+        # Q8_0 packs 32 floats into 34 bytes; innermost dim must be /32.
+        return arr.shape[-1] % 32 == 0 and arr.shape[-1] >= 32
+
+    return True
+
+
 @dataclass
 class ConversionReport:
     """Human-facing summary of the conversion."""
@@ -393,10 +436,14 @@ def _add_metadata(writer: gguf.GGUFWriter, cfg: dict, lang_map: dict[str, int] |
 # Main convert routine
 # =============================================================================
 
-def convert(model_dir: pathlib.Path, output_path: pathlib.Path, *, strict: bool) -> ConversionReport:
+def convert(model_dir: pathlib.Path, output_path: pathlib.Path,
+            *, strict: bool, dtype: str = "f32") -> ConversionReport:
     model_pt     = model_dir / "model.pt"
     config_yaml  = model_dir / "config.yaml"
     lang_map_js  = model_dir / "lang_map.json"
+
+    if dtype not in _DTYPE_TAGS:
+        raise ValueError(f"unsupported --dtype {dtype!r}; choose from {list(_DTYPE_TAGS)}")
 
     if not model_pt.is_file():
         raise FileNotFoundError(model_pt)
@@ -435,20 +482,64 @@ def convert(model_dir: pathlib.Path, output_path: pathlib.Path, *, strict: bool)
         log.warning("%d unexpected tensors present, e.g. %s", len(extras), extras[:5])
 
     # --- write ---
-    log.info("writing GGUF to %s", output_path)
+    log.info("writing GGUF to %s  (dtype=%s)", output_path, dtype)
     writer = gguf.GGUFWriter(str(output_path), GAME_ARCH)
     metadata_keys = _add_metadata(writer, cfg, lang_map)
 
-    total_params = 0
+    total_params       = 0
+    n_compressed       = 0
+    n_kept_f32         = 0
+    target_compressed  = _DTYPE_TAGS[dtype]
+
     for name in sorted(sd):
         arr = _tensor_to_np(sd[name])
-        writer.add_tensor(name, arr, raw_dtype=gguf.GGMLQuantizationType.F32)
         total_params += int(arr.size)
+
+        # Special case: every weight fed to `ggml_conv_1d_dw` as the kernel
+        # MUST be stored as F16 because the CPU backend's `im2col_f16`
+        # implementation asserts the kernel dtype is F16.  Metal has a
+        # separate path that accepts F32 (which is why native tests pass
+        # without this), but CPU / WASM / any non-Metal backend don't.
+        #
+        # Patterns in our model:
+        #   *.dw.weight                            (CgMLP depthwise conv)
+        #   *.merge_dw_conv.weight                 (PAC merge DW conv)
+        #   *.merge_dw_conv_x.weight
+        #   *.merge_dw_conv_pool.weight            (PJAC merge DW convs)
+        is_dw_kernel = (
+            name.endswith(".dw.weight") or
+            ".merge_dw_conv" in name and name.endswith(".weight")
+        )
+        if is_dw_kernel:
+            writer.add_tensor(name, arr.astype(np.float16),
+                              raw_dtype=gguf.GGMLQuantizationType.F16)
+            n_compressed += 1
+            continue
+
+        if dtype == "f32" or not _should_compress(name, arr, dtype):
+            writer.add_tensor(name, arr, raw_dtype=gguf.GGMLQuantizationType.F32)
+            n_kept_f32 += 1
+            continue
+
+        if dtype == "f16":
+            arr_out = arr.astype(np.float16)
+            writer.add_tensor(name, arr_out, raw_dtype=target_compressed)
+        elif dtype == "q8_0":
+            arr_out = gguf.quantize(arr, gguf.GGMLQuantizationType.Q8_0)
+            # For quantized uint8 tensors the writer recovers the logical shape
+            # from the byte shape itself — do NOT pass raw_shape.
+            writer.add_tensor(name, arr_out, raw_dtype=target_compressed)
+        else:
+            raise ValueError(dtype)
+        n_compressed += 1
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
     writer.close()
+
+    log.info("tensors: %d total (%d compressed to %s, %d kept as F32)",
+             n_compressed + n_kept_f32, n_compressed, dtype.upper(), n_kept_f32)
 
     report = ConversionReport(
         num_tensors=len(sd),
@@ -468,6 +559,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Directory containing model.pt + config.yaml + (lang_map.json)")
     parser.add_argument("-o", "--output", type=pathlib.Path, required=True,
                         help="Path to the output GGUF file")
+    parser.add_argument("--dtype", choices=sorted(_DTYPE_TAGS), default="f32",
+                        help="Weight precision (default: f32). q8_0 is the sweet spot for WASM.")
     parser.add_argument("--strict", action="store_true",
                         help="Fail if any expected tensor is missing (default: warn)")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -480,14 +573,15 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        report = convert(args.model_dir, args.output, strict=args.strict)
+        report = convert(args.model_dir, args.output,
+                         strict=args.strict, dtype=args.dtype)
     except Exception as e:
         log.error("conversion failed: %s", e)
         return 1
 
     mb = args.output.stat().st_size / (1024 * 1024)
     print(f"✓ wrote {args.output} ({mb:.1f} MB, "
-          f"{report.num_tensors} tensors, {report.total_params:,} params)")
+          f"{report.num_tensors} tensors, {report.total_params:,} params, dtype={args.dtype})")
     return 0
 
 

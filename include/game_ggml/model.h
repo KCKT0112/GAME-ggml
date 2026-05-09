@@ -20,6 +20,12 @@ public:
     // Throws `GgufError` / `BackendError` / `NotImplemented` on failure.
     static Model load(const std::string & gguf_path);
 
+    // Same as `load`, but with the GGUF file already loaded into memory.
+    // Useful for WASM (JS ArrayBuffer) and embedded scenarios where no
+    // regular filesystem is available.  Takes a copy of the buffer and
+    // keeps it alive for the Model's lifetime.
+    static Model load_from_memory(const void * data, std::size_t n_bytes);
+
     ~Model();
     Model(Model &&) noexcept;
     Model & operator=(Model &&) noexcept;
