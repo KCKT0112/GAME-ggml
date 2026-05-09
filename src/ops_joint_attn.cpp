@@ -164,18 +164,30 @@ JoinResult joint_attention(
     k = region_rope(ctx, k, RegionRopeMode::Mixed,
                     global_positions, region_indices, nullptr, head_dim, theta);
 
-    // Permute to (head_dim, S, H, 1) for flash_attn_ext.
+    // Permute to (head_dim, S, H, 1) — FA layout, also works for manual.
     q = ggml_cont(ctx, ggml_permute(ctx, q, 0, 2, 1, 3));
     k = ggml_cont(ctx, ggml_permute(ctx, k, 0, 2, 1, 3));
     v = ggml_cont(ctx, ggml_permute(ctx, v, 0, 2, 1, 3));
 
     const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+#if defined(GAME_GGML_NO_FLASH_ATTN)
+    // Manual attention with mask — see `attention_with_rope` for rationale.
+    // `ggml_soft_max_ext(kq, mask, scale, 0)` computes softmax(scale*kq + mask).
+    ggml_tensor * kq       = ggml_mul_mat(ctx, k, q);              // (T_k, T_q, H, 1)
+    ggml_tensor * kq_soft  = ggml_soft_max_ext(ctx, kq, attn_mask_fp16,
+        scale, /*max_bias=*/0.0f);
+    ggml_tensor * v_t      = ggml_cont(ctx, ggml_transpose(ctx, v));
+    ggml_tensor * kqv      = ggml_mul_mat(ctx, v_t, kq_soft);     // (D, T_q, H, 1)
+    ggml_tensor * out = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3));
+#else
     ggml_tensor * out = ggml_flash_attn_ext(ctx, q, k, v, attn_mask_fp16,
         scale, /*max_bias=*/0.0f, /*logit_softcap=*/0.0f);
     // out shape: (D_head, H, S, 1)
+    out = ggml_cont(ctx, out);
+#endif
 
     // Flatten heads to (H*D_head, S, 1).
-    out = ggml_cont(ctx, out);
     out = ggml_reshape_3d(ctx, out, Dtot, S, 1);
 
     // Split back into pool (first N tokens) and x (last T tokens).

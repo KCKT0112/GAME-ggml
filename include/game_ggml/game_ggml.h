@@ -31,6 +31,7 @@ enum class Backend {
     Metal,
     CUDA,
     Vulkan,
+    WebGPU,
 };
 
 // Returns the list of backends this library was compiled with, ordered from

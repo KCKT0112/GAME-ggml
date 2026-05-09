@@ -15,6 +15,9 @@
 #if defined(GAME_GGML_HAS_VULKAN)
     #include <ggml-vulkan.h>
 #endif
+#if defined(GAME_GGML_HAS_WEBGPU)
+    #include <ggml-webgpu.h>
+#endif
 #include <ggml-cpu.h>
 
 #include <array>
@@ -53,7 +56,7 @@ const char * ggml_version_string() noexcept {
 // Backend enumeration (declared in game_ggml.h)
 // -----------------------------------------------------------------------------
 namespace {
-    std::array<const char *, 4> g_backend_names = {nullptr, nullptr, nullptr, nullptr};
+    std::array<const char *, 5> g_backend_names = {nullptr, nullptr, nullptr, nullptr, nullptr};
     int g_backend_count = 0;
 
     void populate_backend_names() {
@@ -67,6 +70,9 @@ namespace {
 #endif
 #if defined(GAME_GGML_HAS_VULKAN)
         g_backend_names[g_backend_count++] = "vulkan";
+#endif
+#if defined(GAME_GGML_HAS_WEBGPU)
+        g_backend_names[g_backend_count++] = "webgpu";
 #endif
         g_backend_names[g_backend_count++] = "cpu";
     }
@@ -109,6 +115,15 @@ ggml_backend_t init_backend(Backend which) {
 #else
             return nullptr;
 #endif
+        case Backend::WebGPU:
+#if defined(GAME_GGML_HAS_WEBGPU)
+            // In the browser, emdawnwebgpu will grab whatever adapter/device
+            // the page exposed via `navigator.gpu`.  If no device is available
+            // this returns null and we fall back to CPU.
+            return ggml_backend_webgpu_init();
+#else
+            return nullptr;
+#endif
         case Backend::CPU:
             return ggml_backend_cpu_init();
     }
@@ -124,6 +139,10 @@ ggml_backend_t init_best_backend() {
 #endif
 #if defined(GAME_GGML_HAS_VULKAN)
     if (auto * b = init_backend(Backend::Vulkan)) return b;
+#endif
+#if defined(GAME_GGML_HAS_WEBGPU)
+    // WebGPU goes *above* CPU so browsers with GPU get GPU.
+    if (auto * b = init_backend(Backend::WebGPU)) return b;
 #endif
     if (auto * b = init_backend(Backend::CPU)) return b;
     throw BackendError("failed to initialize any ggml backend (including CPU)");

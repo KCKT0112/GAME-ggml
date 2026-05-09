@@ -64,20 +64,44 @@ ggml_tensor * attention_with_rope(
     qr = apply_rope(ctx, qr, positions, head_dim, theta);   // (D, H, T, B)
     kr = apply_rope(ctx, kr, positions, head_dim, theta);
 
-    // Permute to (D, T, H, B) for flash_attn_ext.
+    // Permute to (D, T, H, B) — FA layout, also works for manual attn.
     qr = ggml_cont(ctx, ggml_permute(ctx, qr, 0, 2, 1, 3));
     kr = ggml_cont(ctx, ggml_permute(ctx, kr, 0, 2, 1, 3));
     vr = ggml_cont(ctx, ggml_permute(ctx, vr, 0, 2, 1, 3));
 
     const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+#if defined(GAME_GGML_NO_FLASH_ATTN)
+    // Manual attention: Q @ K^T → softmax → @ V.
+    // Used on backends whose flash_attn_ext shader table doesn't cover our
+    // head_dim (e.g. ggml-webgpu only ships FA kernels for head_dim=64/128;
+    // GAME uses head_dim=32).  Slightly slower + more memory than FA but
+    // composes out of the most common matmul + softmax primitives which
+    // every ggml backend supports.
+    //
+    // Shapes (per head/batch):
+    //   qr, kr, vr : (D, T, H, B)
+    //   kq         : (T_k, T_q, H, B)  — from mul_mat(kr, qr)
+    //   kq_soft    : same, softmax over ne[0]
+    //   vr_t       : (T, D, H, B)      — transpose(vr)
+    //   kqv        : (D, T, H, B)      — from mul_mat(vr_t, kq_soft)
+    ggml_tensor * kq       = ggml_mul_mat(ctx, kr, qr);
+    ggml_tensor * kq_soft  = ggml_soft_max_ext(ctx, kq,
+        /*mask=*/nullptr, scale, /*max_bias=*/0.0f);
+    ggml_tensor * vr_t     = ggml_cont(ctx, ggml_transpose(ctx, vr));
+    ggml_tensor * kqv      = ggml_mul_mat(ctx, vr_t, kq_soft);
+    // Permute (D, T, H, B) → (D, H, T, B) so D and H are adjacent and we
+    // can flatten to (H*D, T, B) without a second cont.
+    ggml_tensor * o = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3));
+#else
     ggml_tensor * o = ggml_flash_attn_ext(ctx, qr, kr, vr,
         /*mask=*/nullptr, scale, /*max_bias=*/0.0f, /*logit_softcap=*/0.0f);
-    // Output shape per ggml_flash_attn_ext: (D, H, T, B)
-    // — ne[1] = q->ne[2] = H; ne[2] = q->ne[1] = T.
-
-    // Flatten heads: (D, H, T, B) → (H*D, T, B).  This works because H*D is
-    // contiguous in memory (d varies innermost, then h).
+    // Output shape per ggml_flash_attn_ext: (D, H, T, B).
     o = ggml_cont(ctx, o);
+#endif
+
+    // Flatten heads: (D, H, T, B) → (H*D, T, B).  D varies fastest, H next,
+    // so combining ne[0]*ne[1] gives a contiguous H*D row.
     o = ggml_reshape_3d(ctx, o, attn_dim, T, B);
 
     // Output projection.

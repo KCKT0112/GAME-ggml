@@ -139,6 +139,18 @@ endif()
 if(GAME_GGML_VULKAN)
     target_compile_definitions(game_ggml PUBLIC GAME_GGML_HAS_VULKAN=1)
 endif()
+# GGML_WEBGPU is a variable set by ggml's own CMake; propagate it so our
+# backend.cpp can #include <ggml-webgpu.h> and enumerate "webgpu" in
+# available_backends().
+if(GGML_WEBGPU)
+    target_compile_definitions(game_ggml PUBLIC GAME_GGML_HAS_WEBGPU=1)
+    # ggml-webgpu's precompiled flash_attn_ext shader library only covers a
+    # fixed set of (head_dim, block_m, block_n) tuples.  GAME uses head_dim=32
+    # which isn't in that table — calling `ggml_flash_attn_ext` on this
+    # backend trips `GGML_ASSERT(decisions.path != ... PATH_NONE)`.  Switch to
+    # manual Q@K^T + softmax + @V in our attention ops for this build.
+    target_compile_definitions(game_ggml PRIVATE GAME_GGML_NO_FLASH_ATTN=1)
+endif()
 
 # -----------------------------------------------------------------------------
 # CLI executable
@@ -170,7 +182,11 @@ endif()
 # WASM module (Emscripten only)
 # -----------------------------------------------------------------------------
 if(GAME_GGML_BUILD_WASM)
-    add_executable(game_ggml_wasm src/wasm_bindings.cpp)
+    add_executable(game_ggml_wasm
+        src/wasm_bindings.cpp
+        src/wasm_exports.cpp
+        src/cli/slicer.cpp
+    )
     target_link_libraries(game_ggml_wasm PRIVATE game_ggml::game_ggml)
     target_compile_options(game_ggml_wasm PRIVATE ${GAME_GGML_WARN_FLAGS})
     set_target_properties(game_ggml_wasm PROPERTIES
@@ -188,8 +204,8 @@ if(GAME_GGML_BUILD_WASM)
         "-sALLOW_MEMORY_GROWTH=1"
         "-sMAXIMUM_MEMORY=2GB"
         "-sSTACK_SIZE=2MB"
-        "-sEXPORTED_FUNCTIONS=_malloc,_free"
-        "-sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPF32"
+        "-sEXPORTED_FUNCTIONS=_malloc,_free,_gg_create_model,_gg_destroy_model,_gg_set_threads,_gg_sample_rate,_gg_slice,_gg_infer,_gg_free,_gg_version,_gg_ggml_version"
+        "-sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,HEAPF32,UTF8ToString"
         "-sFORCE_FILESYSTEM=1"
         "-sNO_EXIT_RUNTIME=1"
     )
@@ -207,6 +223,30 @@ if(GAME_GGML_BUILD_WASM)
             "-pthread"
             "-sPTHREAD_POOL_SIZE=8"        # pre-allocate 8 WebWorkers; ggml picks how many to use via setNumThreads
             "-sSHARED_MEMORY=1"
+        )
+    endif()
+
+    if(GGML_WEBGPU)
+        # WebGPU calls (RequestAdapter, onSubmittedWorkDone, …) are exposed
+        # through emdawnwebgpu's JSPI (WebAssembly.Suspending) shim.  For JS
+        # entry points to suspend into WASM, they must be wrapped with
+        # `WebAssembly.promising`.  Emscripten does NOT auto-wrap exports by
+        # default — we have to list them explicitly here.  embind-bound
+        # functions aren't in this list (runtime-registered), so the JS side
+        # uses plain-C wrappers (gg_*) for everything that reaches WebGPU.
+        #
+        # Two notes:
+        #  * JSPI_EXPORTS matches against raw WASM export keys, which have no
+        #    underscore prefix (unlike EXPORTED_FUNCTIONS).  Drop the `_`.
+        #  * Only list functions that actually suspend — promising wrapping
+        #    turns them into async (returning Promise), so every caller must
+        #    `await` them.  `gg_create_model` calls `ggml_backend_webgpu_init`
+        #    (adapter/device request → suspends).  `gg_infer` calls
+        #    `ggml_backend_graph_compute` (queue.onSubmittedWorkDone →
+        #    suspends).  Everything else (slice/set_threads/sample_rate/free)
+        #    stays synchronous.
+        list(APPEND _wasm_link_opts
+            "-sJSPI_EXPORTS=gg_create_model,gg_destroy_model,gg_infer"
         )
     endif()
 

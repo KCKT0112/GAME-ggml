@@ -1,89 +1,563 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8">
-<title>GAME ggml — Browser Demo</title>
+  <meta charset="utf-8">
+  <title>Web GAME - Generative Adaptive MIDI Extractor</title>
+  <script src="coi-serviceworker.js"></script>
 
-<!-- Cross-origin isolation shim: enables SharedArrayBuffer + threads on GitHub Pages. -->
-<script src="coi-serviceworker.js"></script>
+  <style>
+    :root {
+      --fg: #111;
+      --muted: #666;
+      --bg: #fdfdfd;
+      --card: #fff;
+      --border: #e5e5e5;
+      --accent: #111;
+      --accent-fg: #fff;
+      --ok: #2b7a3c;
+      --bad: #c23;
+    }
 
-<style>
-  body { font: 14px/1.5 system-ui, sans-serif; max-width: 840px; margin: 2em auto; padding: 0 1em; }
-  h1   { margin-top: 0; }
-  .zone { border: 2px dashed #888; border-radius: 8px; padding: 2em; text-align: center; color: #555; }
-  .zone.drag { background: #fafafa; border-color: #555; color: #222; }
-  button { padding: 0.5em 1em; font-size: 1em; cursor: pointer; }
-  button:disabled { opacity: 0.5; cursor: wait; }
-  #log { white-space: pre-wrap; background: #1e1e1e; color: #ddd; padding: 1em;
-          border-radius: 6px; font: 12px/1.4 ui-monospace, Menlo, monospace;
-          max-height: 260px; overflow-y: auto; }
-  #roll { border: 1px solid #ccc; display: block; margin: 1em auto; }
-  .row  { display: flex; gap: 1em; align-items: center; margin: 1em 0; flex-wrap: wrap; }
-  label { font-weight: 500; }
-  select, input[type=number] { padding: 0.25em 0.5em; }
-  .muted { color: #888; font-size: 0.9em; }
-  .banner { padding: 0.5em 0.8em; border-radius: 5px; background: #eef; margin: 0.5em 0 1em; }
-  .ok { color: #2a7; }
-  .bad { color: #c44; }
-</style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      max-width: 900px;
+      margin: 1.5em auto;
+      padding: 0 1.25em;
+    }
+
+    h1 {
+      margin: 0 0 0.25em;
+      font-size: 1.5em;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin: 0 0 1em;
+      font-size: 0.95em;
+    }
+
+    .env {
+      display: flex;
+      gap: 1em;
+      flex-wrap: wrap;
+      align-items: center;
+      padding: 0.6em 0.9em;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 0.9em;
+      margin-bottom: 1em;
+    }
+
+    .env .pill {
+      padding: 0.1em 0.5em;
+      border-radius: 999px;
+      font-weight: 500;
+      background: #f0f0f0;
+    }
+
+    .env .ok {
+      color: var(--ok);
+      background: #e6f4e8;
+    }
+
+    .env .bad {
+      color: var(--bad);
+      background: #fbe7e9;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1em 1.2em;
+      margin-bottom: 1em;
+    }
+
+    .card h2 {
+      margin: 0 0 0.6em;
+      font-size: 0.95em;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 0.8em;
+      align-items: end;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25em;
+      min-width: 0;
+    }
+
+    .field label {
+      font-size: 0.8em;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 600;
+    }
+
+    select,
+    input[type=number],
+    input[type=text] {
+      font: inherit;
+      line-height: 1.3;
+      padding: 0.5em 0.65em;
+      height: 2.4em;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--fg);
+      min-width: 0;
+    }
+
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      padding-right: 2em;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='none' stroke='%23666' stroke-width='1.4' d='M1 1l4 4 4-4'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 0.7em center;
+    }
+
+    select:focus,
+    input:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+
+    .buttons {
+      display: flex;
+      gap: 0.6em;
+      flex-wrap: wrap;
+    }
+
+    button {
+      font: inherit;
+      font-weight: 500;
+      padding: 0.55em 1.1em;
+      border: none;
+      border-radius: 8px;
+      background: var(--accent);
+      color: var(--accent-fg);
+      cursor: pointer;
+      transition: opacity 0.15s ease, transform 0.05s ease;
+    }
+
+    button:hover:not(:disabled) {
+      opacity: 0.85;
+    }
+
+    button:active:not(:disabled) {
+      transform: translateY(1px);
+    }
+
+    button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    button.ghost {
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+
+    button.ghost:hover:not(:disabled) {
+      background: #f3f3f3;
+      opacity: 1;
+    }
+
+    .zone {
+      border: 2px dashed #ccc;
+      border-radius: 12px;
+      padding: 2em;
+      text-align: center;
+      color: var(--muted);
+      background: var(--card);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .zone:hover,
+    .zone.drag {
+      border-color: var(--accent);
+      color: var(--fg);
+      background: #fafafa;
+    }
+
+    .zone .big {
+      font-weight: 500;
+      color: var(--fg);
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 0.8em;
+      flex-wrap: wrap;
+      margin-top: 0.6em;
+      font-size: 0.9em;
+      color: var(--muted);
+    }
+
+    .status-row .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ddd;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .status-row .dot.running {
+      background: #d9a914;
+      animation: pulse 1s infinite;
+    }
+
+    .status-row .dot.ok {
+      background: var(--ok);
+    }
+
+    .status-row .dot.bad {
+      background: var(--bad);
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.35;
+      }
+    }
+
+    #roll {
+      width: 100%;
+      height: 240px;
+      display: block;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+    }
+
+    #log {
+      white-space: pre-wrap;
+      background: #151515;
+      color: #d0d0d0;
+      padding: 0.9em;
+      border-radius: 8px;
+      font: 12px/1.5 ui-monospace, Menlo, monospace;
+      max-height: 260px;
+      overflow-y: auto;
+      margin: 0.8em 0 0;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    footer {
+      margin: 2em 0 1em;
+      padding: 1em 0;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 0.9em;
+      color: var(--muted);
+    }
+    footer a {
+      color: var(--fg);
+      text-decoration: none;
+      border-bottom: 1px dotted var(--muted);
+      padding-bottom: 1px;
+      transition: border-color 0.15s ease;
+    }
+    footer a:hover { border-bottom-color: var(--fg); }
+    footer .sep { margin: 0 0.5em; opacity: 0.4; }
+
+    /* --- Piano roll modal ------------------------------------------- */
+    .modal-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.55);
+      display: none;
+      align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-content {
+      background: #fff;
+      border-radius: 12px;
+      width: 95vw; height: 95vh;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+    }
+    .modal-content > header {
+      padding: 0.75em 1em;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal-content > header h3 { margin: 0; font-size: 1em; font-weight: 600; }
+    .modal-content > header .shortcut-hint {
+      color: var(--muted);
+      font-weight: 400;
+      font-size: 0.8em;
+      margin-left: 0.5em;
+    }
+    .modal-close {
+      background: transparent; color: var(--fg); border: none;
+      font-size: 1.5em; line-height: 1; padding: 0.2em 0.5em;
+      border-radius: 6px; cursor: pointer;
+    }
+    .modal-close:hover { background: #f0f0f0; }
+
+    .piano-controls {
+      display: flex; align-items: center; gap: 0.8em; flex-wrap: wrap;
+      padding: 0.5em 0.9em;
+      border-bottom: 1px solid var(--border);
+      background: #fafafa;
+      font-size: 0.9em;
+    }
+    .piano-controls button.icon {
+      width: 34px; height: 34px; min-width: 34px;
+      padding: 0; font-size: 1em; line-height: 1;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .piano-controls .time {
+      font: 12px ui-monospace, monospace;
+      color: var(--muted);
+      min-width: 7em; text-align: center;
+    }
+    .piano-controls .spacer { flex: 1; }
+    .piano-controls label {
+      display: inline-flex; align-items: center; gap: 0.4em;
+      user-select: none;
+    }
+    .piano-controls .zoom { display: flex; gap: 0.3em; }
+
+    /* custom checkboxes — same black-on-white aesthetic as buttons */
+    .piano-controls input[type=checkbox] {
+      appearance: none; -webkit-appearance: none; -moz-appearance: none;
+      width: 16px; height: 16px;
+      border: 1.5px solid #333;
+      border-radius: 3px;
+      cursor: pointer;
+      position: relative;
+      background: #fff;
+      margin: 0;
+    }
+    .piano-controls input[type=checkbox]:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .piano-controls input[type=checkbox]:checked::after {
+      content: '';
+      position: absolute;
+      left: 4px; top: 0;
+      width: 4px; height: 9px;
+      border: solid #fff;
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+
+    /* custom sliders */
+    .piano-controls input[type=range] {
+      appearance: none; -webkit-appearance: none;
+      background: transparent;
+      width: 100px; height: 16px; margin: 0;
+      cursor: pointer;
+    }
+    .piano-controls input[type=range]::-webkit-slider-runnable-track {
+      height: 3px; background: #ccc; border-radius: 2px;
+      background: linear-gradient(to right, var(--accent) var(--range-pct, 0%), #ccc var(--range-pct, 0%));
+    }
+    .piano-controls input[type=range]::-webkit-slider-thumb {
+      appearance: none; -webkit-appearance: none;
+      width: 13px; height: 13px; border-radius: 50%;
+      background: var(--accent);
+      margin-top: -5px;
+      border: none;
+    }
+    .piano-controls input[type=range]::-moz-range-track {
+      height: 3px; background: #ccc; border-radius: 2px;
+    }
+    .piano-controls input[type=range]::-moz-range-progress {
+      height: 3px; background: var(--accent); border-radius: 2px;
+    }
+    .piano-controls input[type=range]::-moz-range-thumb {
+      width: 13px; height: 13px; border-radius: 50%;
+      background: var(--accent); border: none;
+    }
+
+    .piano-scroll {
+      flex: 1; overflow: auto;
+      background: #1a1a1a;
+      position: relative;
+      /* Disable elastic overscroll / rubber-band bounce completely. */
+      overscroll-behavior: none;
+      -webkit-overflow-scrolling: auto;
+    }
+    #pianoCanvas { display: block; position: relative; }
+  </style>
 </head>
+
 <body>
 
-<h1>GAME ggml — browser demo</h1>
-<p class="muted">
-  Singing-voice → MIDI transcription, running 100% client-side in WASM.
-  No server, no uploads.
-  <span id="buildStats"></span>
-</p>
+  <h1>Web GAME</h1>
+  <p class="subtitle">Generative Adaptive MIDI Extractor</p>
+  <p class="subtitle">
+    Singing-voice → MIDI, 100% client-side in WebAssembly. No server, no uploads.
+    <span id="buildStats"></span>
+  </p>
 
-<div id="envBanner" class="banner">detecting environment…</div>
+  <div id="env" class="env">
+    <span class="pill">loading env…</span>
+  </div>
 
-<div class="row">
-  <label>Model:</label>
-  <select id="modelChoice">
-    <option value="q8_0" selected>Q8_0 · smallest (~16 MB)</option>
-    <option value="f16">F16 · mid (~25 MB)</option>
-    <option value="f32">F32 · fastest on WASM (~48 MB)</option>
-  </select>
+  <section class="card">
+    <h2>Model</h2>
+    <div class="grid">
+      <div class="field">
+        <label>precision</label>
+        <select id="modelChoice">
+          <option value="q8_0">Q8_0 · 16 MB (slowly on WASM)</option>
+          <option value="f16" selected>F16 · 25 MB</option>
+          <option value="f32">F32 · 48 MB (fastest on WASM)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>backend</label>
+        <select id="backendChoice">
+          <option value="auto" selected>auto (prefer GPU)</option>
+          <option value="gpu">WebGPU</option>
+          <option value="cpu">CPU (multi-threaded)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>load</label>
+        <button id="loadBtn">Load model</button>
+      </div>
+      <div class="field" style="flex:2">
+        <label>status</label>
+        <div class="status-row"><span id="modelDot" class="dot"></span><span id="modelStatus">click Load</span></div>
+      </div>
+    </div>
+  </section>
 
-  <label>Threads:</label>
-  <input id="nthreads" type="number" min="1" max="16" value="4" style="width:4em">
+  <section class="card">
+    <h2>Inference settings</h2>
+    <div class="grid">
+      <div class="field">
+        <label>language</label>
+        <select id="language">
+          <option value="0" selected>unknown</option>
+          <option value="4">zh</option>
+          <option value="1">en</option>
+          <option value="2">ja</option>
+          <option value="3">yue</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>threads</label>
+        <input id="nthreads" type="number" min="1" max="16" value="4">
+      </div>
+      <div class="field">
+        <label>D3PM steps</label>
+        <input id="nsteps" type="number" min="1" max="32" value="1">
+      </div>
+      <div class="field">
+        <label>seed</label>
+        <input id="seed" type="number" min="0" max="4294967295" value="42">
+      </div>
+    </div>
+  </section>
 
-  <label>Language:</label>
-  <select id="language">
-    <option value="4">zh</option>
-    <option value="1">en</option>
-    <option value="2">ja</option>
-    <option value="3">yue</option>
-    <option value="0">unknown</option>
-  </select>
+  <section class="card">
+    <h2>Audio</h2>
+    <div id="dropZone" class="zone">
+      <div class="big">Drop a WAV / MP3 / FLAC / M4A here</div>
+      <div class="muted">or click to choose</div>
+      <input id="file" type="file" accept="audio/*" style="display:none">
+    </div>
+    <div class="status-row">
+      <span id="audioDot" class="dot"></span>
+      <span id="audioStatus">no audio loaded</span>
+    </div>
+  </section>
 
-  <label>Steps:</label>
-  <input id="nsteps" type="number" min="1" max="32" value="1" style="width:4em">
+  <section class="card">
+    <h2>Transcribe</h2>
+    <div class="buttons">
+      <button id="runBtn" disabled>Transcribe</button>
+      <button id="pianoBtn" class="ghost" disabled>Open piano roll</button>
+      <button id="dlBtn" class="ghost" disabled>Download MIDI</button>
+      <button id="dlTxtBtn" class="ghost" disabled>Download TXT</button>
+    </div>
+    <div class="status-row">
+      <span id="runDot" class="dot"></span>
+      <span id="runStatus">idle</span>
+    </div>
+    <canvas id="roll"></canvas>
+    <pre id="log">[ready]</pre>
+  </section>
 
-  <label>Seed:</label>
-  <input id="seed" type="number" min="0" max="4294967295" value="42" style="width:8em">
+  <script type="module" src="./demo.js"></script>
 
-  <button id="loadBtn">Load model</button>
-  <span id="modelStatus" class="muted">(click Load)</span>
-</div>
+  <!-- Piano-roll modal ------------------------------------------------ -->
+  <div id="pianoModal" class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal-content">
+      <header>
+        <h3>Piano Roll <span class="shortcut-hint" id="shortcutHint"></span></h3>
+        <button class="modal-close" id="closePiano" aria-label="Close">×</button>
+      </header>
+      <div class="piano-controls">
+        <button id="playBtn" class="icon" title="Play / Pause"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><polygon points="2,0 14,7 2,14"/></svg></button>
+        <button id="stopBtn" class="icon" title="Stop"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><rect width="12" height="12" rx="1"/></svg></button>
+        <span class="time" id="timeDisplay">0:00 / 0:00</span>
+        <label><input type="checkbox" id="playOrig" checked> original audio</label>
+        <label>MIDI <input type="range" id="midiVol" min="0" max="100" value="30"></label>
+        <label>WAV <input type="range" id="wavVol" min="0" max="100" value="80"></label>
+        <label><input type="checkbox" id="followPlayhead" checked> follow</label>
+        <span class="spacer"></span>
+        <span class="zoom">
+          <button class="icon" id="zoomOut" title="Zoom out  (−)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="7" x2="12" y2="7"/></svg></button>
+          <button class="icon" id="zoomIn" title="Zoom in  (+)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2"><line x1="7" y1="2" x2="7" y2="12"/><line x1="2" y1="7" x2="12" y2="7"/></svg></button>
+          <button class="icon" id="zoomFit" title="Fit to width  (0)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="1" y="1" width="12" height="12" rx="2"/><polyline points="1,5 4,5 4,1"/><polyline points="13,9 10,9 10,13"/></svg></button>
+        </span>
+      </div>
+      <div class="piano-scroll" id="pianoScroll">
+        <div id="pianoSpacer" style="position:absolute;top:0;left:0;pointer-events:none;"></div>
+        <canvas id="pianoCanvas"></canvas>
+      </div>
+    </div>
+  </div>
 
-<div id="dropZone" class="zone">
-  <strong>Drop a WAV / MP3 / FLAC / M4A here</strong><br>
-  <span class="muted">or click to choose</span>
-  <input id="file" type="file" accept="audio/*" style="display:none">
-</div>
-
-<div class="row">
-  <button id="runBtn" disabled>Transcribe</button>
-  <button id="dlBtn"  disabled>Download MIDI</button>
-  <button id="dlTxtBtn" disabled>Download TXT</button>
-  <span id="runStatus" class="muted"></span>
-</div>
-
-<canvas id="roll" width="820" height="220"></canvas>
-<pre id="log">[ready]</pre>
-
-<script type="module" src="./demo.js"></script>
+  <footer>
+    <a href="https://github.com/openvpi/GAME" target="_blank" rel="noopener">openvpi/GAME</a>
+    <span class="sep">·</span>
+    <a href="https://github.com/KCKT0112/GAME-ggml" target="_blank" rel="noopener">KCKT0112/GAME-ggml</a>
+    <span class="sep">·</span>
+    <span class="muted">MIT licensed · 100% client-side</span>
+  </footer>
 </body>
+
 </html>
