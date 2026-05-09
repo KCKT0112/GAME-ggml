@@ -181,6 +181,7 @@ if(GAME_GGML_BUILD_WASM)
     set(_wasm_link_opts
         "-lembind"
         "-sMODULARIZE=1"
+        "-sEXPORT_ES6=1"
         "-sEXPORT_NAME=createGameGGML"
         "-sENVIRONMENT=web,worker,node"
         "-sINITIAL_MEMORY=64MB"
