@@ -10,6 +10,7 @@
 
 #include <ggml-alloc.h>
 #include <ggml-backend.h>
+#include <ggml-cpu.h>
 #include <ggml.h>
 
 #include <algorithm>
@@ -45,6 +46,17 @@ Model Model::load_from_memory(const void * data, std::size_t n_bytes) {
 
 const GameModelConfig & Model::config() const noexcept { return impl_->cfg; }
 Model::Impl & Model::internals() noexcept { return *impl_; }
+
+void Model::set_n_threads(int n) { impl_->set_n_threads(n); }
+
+void Model::Impl::set_n_threads(int n) {
+    if (!backend) return;
+    // Only CPU backend exposes a thread setter.  `ggml_backend_is_cpu` is
+    // cheap and matches both native CPU and Emscripten builds.
+    if (ggml_backend_is_cpu(backend)) {
+        ggml_backend_cpu_set_n_threads(backend, n > 0 ? n : 1);
+    }
+}
 
 InferResult Model::infer(const float * waveform, std::size_t n_samples,
                          const InferParams & params) {

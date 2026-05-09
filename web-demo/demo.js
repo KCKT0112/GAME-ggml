@@ -3,7 +3,29 @@
 
 import createGameGGML from './game_ggml.js';
 
-// ---- small helpers ---------------------------------------------------------
+// ---- env report ------------------------------------------------------------
+
+(function detectEnv() {
+    const banner = document.getElementById('envBanner');
+    const cores  = navigator.hardwareConcurrency || 4;
+    const isolated = !!self.crossOriginIsolated;
+    const hasGpu   = !!navigator.gpu;
+
+    const bits = [`<strong>${cores}</strong> logical cores`];
+    bits.push(isolated
+        ? '<span class="ok">threads ✓</span> (cross-origin isolated)'
+        : '<span class="bad">threads ✗</span> (not isolated — reload once after the service worker installs)');
+    bits.push(hasGpu
+        ? '<span class="ok">WebGPU ✓</span>'
+        : 'WebGPU ✗');
+    banner.innerHTML = bits.join(' · ');
+
+    const ntInput = document.getElementById('nthreads');
+    if (ntInput && !isolated) ntInput.value = 1;   // threads unavailable → stay single-threaded
+    else if (ntInput)         ntInput.value = Math.max(1, Math.min(8, cores));
+})();
+
+// ---- tiny helpers ----------------------------------------------------------
 
 const $ = id => document.getElementById(id);
 const log = (...args) => {
@@ -12,7 +34,6 @@ const log = (...args) => {
     $('log').scrollTop = $('log').scrollHeight;
     console.log(...args);
 };
-
 function fmtBytes(n) {
     const units = ['B','KB','MB','GB'];
     let u = 0;
@@ -20,7 +41,7 @@ function fmtBytes(n) {
     return n.toFixed(n < 10 ? 2 : n < 100 ? 1 : 0) + ' ' + units[u];
 }
 
-// ---- cached model fetch (IndexedDB via Cache API) --------------------------
+// ---- cached model fetch (persistent Cache Storage) -------------------------
 
 async function fetchModel(dtype) {
     const url = `./assets/game_small_${dtype}.gguf`;
@@ -41,21 +62,21 @@ async function fetchModel(dtype) {
     return bytes;
 }
 
-// ---- WASM module lifecycle -------------------------------------------------
+// ---- module + model lifecycle ---------------------------------------------
 
-let Module = null;           // Emscripten module
-let model  = null;           // ModelJs instance
-let audioBuffer = null;      // most recent decoded Float32Array
-let lastNotes = null;        // most recent result
+let Module = null;
+let model  = null;
+let audioBuffer = null;
+let lastNotes = null;
 
 async function ensureModule() {
     if (Module) return Module;
     log('loading game_ggml.wasm ...');
     Module = await createGameGGML({
-        locateFile: (p) => p,  // JS, wasm in the same folder
+        locateFile: (p) => p,
     });
     log(`game_ggml ${Module.version()} · ggml ${Module.ggmlVersion()}`);
-    $('buildStats').textContent = `· game_ggml ${Module.version()} · ggml ${Module.ggmlVersion()}`;
+    $('buildStats').textContent = ` · game_ggml ${Module.version()} · ggml ${Module.ggmlVersion()}`;
     return Module;
 }
 
@@ -70,12 +91,12 @@ async function loadModel() {
 
         const ptr = M._malloc(bytes.byteLength);
         M.HEAPU8.set(new Uint8Array(bytes), ptr);
-        log(`building model (heap at 0x${ptr.toString(16)}) ...`);
+        log(`building model ...`);
         const t0 = performance.now();
         model = M.createModelFromPtr(ptr, bytes.byteLength);
         const dt = performance.now() - t0;
         M._free(ptr);
-        log(`model ready in ${dt.toFixed(0)} ms: arch=${model.arch()}, sr=${model.sampleRate()}, mels=${model.nMels()}`);
+        log(`model ready in ${dt.toFixed(0)} ms · arch=${model.arch()} · sr=${model.sampleRate()}`);
         $('modelStatus').textContent = `loaded · ${dtype} · ${fmtBytes(bytes.byteLength)}`;
         $('runBtn').disabled = !(audioBuffer && model);
     } catch (e) {
@@ -95,7 +116,6 @@ async function decodeFile(file) {
     const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
     const ab = await ac.decodeAudioData(buf);
     ac.close();
-    // Downmix to mono if needed.
     let mono;
     if (ab.numberOfChannels === 1) {
         mono = ab.getChannelData(0).slice();
@@ -117,9 +137,6 @@ async function decodeFile(file) {
     $('runBtn').disabled = !(model && audioBuffer);
 }
 
-// Simple linear interpolation resampler.  Adequate for demo; for production
-// use a proper sinc filter.  Audio sources are usually 44.1/48 kHz so we're
-// not doing heavy resampling.
 function linearResample(src, srIn, srOut) {
     const ratio = srIn / srOut;
     const n = Math.floor(src.length / ratio);
@@ -143,16 +160,21 @@ async function transcribe() {
         const M = Module;
         const bytes = audioBuffer.byteLength;
         const wavPtr = M._malloc(bytes);
-        // Float32Array aligned copy into HEAPF32.
         M.HEAPF32.set(audioBuffer, wavPtr / 4);
 
-        const lang    = parseInt($('language').value, 10);
-        const nsteps  = parseInt($('nsteps').value, 10);
-        const seed    = BigInt($('seed').value);
-        const seedLo  = Number(seed & 0xFFFFFFFFn);
-        const seedHi  = Number((seed >> 32n) & 0xFFFFFFFFn);
+        const lang     = parseInt($('language').value, 10);
+        const nsteps   = parseInt($('nsteps').value, 10);
+        const nthreads = parseInt($('nthreads').value, 10);
+        const seed     = BigInt($('seed').value);
+        const seedLo   = Number(seed & 0xFFFFFFFFn);
+        const seedHi   = Number((seed >> 32n) & 0xFFFFFFFFn);
 
-        log(`inference: ${audioBuffer.length} samples, lang=${lang}, nsteps=${nsteps}, seed=${seed}`);
+        // setNumThreads is a no-op on single-threaded builds; harmless otherwise.
+        if (typeof model.setNumThreads === 'function') {
+            model.setNumThreads(nthreads);
+        }
+
+        log(`inference: ${audioBuffer.length} samples, lang=${lang}, nsteps=${nsteps}, threads=${nthreads}, seed=${seed}`);
         const t0 = performance.now();
         const notes = model.infer(wavPtr, audioBuffer.length, lang, seedLo, seedHi, nsteps);
         const dt = (performance.now() - t0) / 1000;
@@ -163,7 +185,7 @@ async function transcribe() {
         log(`→ ${notes.length} notes (${voiced.length} voiced) in ${dt.toFixed(2)} s` +
             ` (RTF ${(dur / dt).toFixed(1)}×)`);
         $('runStatus').textContent =
-            `${voiced.length} notes · ${dt.toFixed(2)} s · RTF ${(dur / dt).toFixed(1)}×`;
+            `${voiced.length} voiced notes · ${dt.toFixed(2)} s · RTF ${(dur / dt).toFixed(1)}×`;
         lastNotes = notes;
         draw(notes);
         $('dlBtn').disabled = false;
@@ -196,15 +218,11 @@ function draw(notes) {
     const xs = t => t * W / tEnd;
     const ys = p => H - (p - pLo) * H / (pHi - pLo);
 
-    // grid
     ctx.strokeStyle = '#eee';
     ctx.beginPath();
-    for (let p = pLo; p <= pHi; p++) {
-        ctx.moveTo(0, ys(p)); ctx.lineTo(W, ys(p));
-    }
+    for (let p = pLo; p <= pHi; p++) { ctx.moveTo(0, ys(p)); ctx.lineTo(W, ys(p)); }
     ctx.stroke();
 
-    // notes
     for (const n of voiced) {
         const x = xs(n.offset);
         const w = Math.max(1, xs(n.offset + n.duration) - x);
@@ -214,7 +232,7 @@ function draw(notes) {
     }
 }
 
-// ---- download .mid / .txt --------------------------------------------------
+// ---- .mid / .txt download --------------------------------------------------
 
 function downloadMidi() {
     if (!lastNotes) return;
@@ -239,7 +257,6 @@ function triggerDownload(blob, filename) {
     setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-// Minimal SMF type-0 writer in JS (same layout as src/cli/midi_writer.cpp).
 function encodeMidi(notes, tempoBpm) {
     const TPQN = 480;
     const tps  = TPQN * tempoBpm / 60;
@@ -272,20 +289,14 @@ function encodeMidi(notes, tempoBpm) {
     }
     const u32 = (n) => [(n>>>24)&0xff,(n>>>16)&0xff,(n>>>8)&0xff,n&0xff];
     const u16 = (n) => [(n>>>8)&0xff, n&0xff];
-    const out = [
-        ...new TextEncoder().encode('MThd'),
-        ...u32(6),
-        ...u16(0),           // format 0
-        ...u16(1),           // 1 track
-        ...u16(TPQN),
-        ...new TextEncoder().encode('MTrk'),
-        ...u32(track.length),
-        ...track,
-    ];
-    return new Uint8Array(out);
+    return new Uint8Array([
+        ...new TextEncoder().encode('MThd'), ...u32(6),
+        ...u16(0), ...u16(1), ...u16(TPQN),
+        ...new TextEncoder().encode('MTrk'), ...u32(track.length), ...track,
+    ]);
 }
 
-// ---- wire events -----------------------------------------------------------
+// ---- wire up events --------------------------------------------------------
 
 $('loadBtn').addEventListener('click', loadModel);
 $('runBtn').addEventListener('click',  transcribe);

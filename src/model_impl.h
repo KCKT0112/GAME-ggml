@@ -55,6 +55,11 @@ struct Model::Impl {
         const InferParams & params,
         internal::IRandomSource & rng);
 
+    // Set the number of threads used by the CPU backend (only takes effect
+    // when backend is the CPU backend — Metal/CUDA/Vulkan ignore this).
+    // `n <= 0` resets to ggml's default (typically hardware concurrency).
+    void set_n_threads(int n);
+
 private:
     // Common post-load setup shared by `load` and `load_from_memory`.
     void init_from_gguf();

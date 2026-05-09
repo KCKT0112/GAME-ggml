@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>GAME ggml — Browser Demo</title>
+
+<!-- Cross-origin isolation shim: enables SharedArrayBuffer + threads on GitHub Pages. -->
+<script src="coi-serviceworker.js"></script>
+
 <style>
   body { font: 14px/1.5 system-ui, sans-serif; max-width: 840px; margin: 2em auto; padding: 0 1em; }
   h1   { margin-top: 0; }
@@ -18,8 +22,9 @@
   label { font-weight: 500; }
   select, input[type=number] { padding: 0.25em 0.5em; }
   .muted { color: #888; font-size: 0.9em; }
-  .stat  { display: inline-block; background: #eef; padding: 0.3em 0.6em;
-           border-radius: 4px; margin-right: 0.5em; }
+  .banner { padding: 0.5em 0.8em; border-radius: 5px; background: #eef; margin: 0.5em 0 1em; }
+  .ok { color: #2a7; }
+  .bad { color: #c44; }
 </style>
 </head>
 <body>
@@ -31,13 +36,18 @@
   <span id="buildStats"></span>
 </p>
 
+<div id="envBanner" class="banner">detecting environment…</div>
+
 <div class="row">
   <label>Model:</label>
   <select id="modelChoice">
     <option value="q8_0" selected>Q8_0 · smallest (~16 MB)</option>
-    <option value="f16">F16 · better quality (~25 MB)</option>
-    <option value="f32">F32 · reference (~48 MB)</option>
+    <option value="f16">F16 · mid (~25 MB)</option>
+    <option value="f32">F32 · fastest on WASM (~48 MB)</option>
   </select>
+
+  <label>Threads:</label>
+  <input id="nthreads" type="number" min="1" max="16" value="4" style="width:4em">
 
   <label>Language:</label>
   <select id="language">
@@ -48,7 +58,7 @@
     <option value="0">unknown</option>
   </select>
 
-  <label>D3PM steps:</label>
+  <label>Steps:</label>
   <input id="nsteps" type="number" min="1" max="32" value="1" style="width:4em">
 
   <label>Seed:</label>

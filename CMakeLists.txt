@@ -12,6 +12,7 @@ option(GAME_GGML_VULKAN      "Enable ggml Vulkan backend"   OFF)
 option(GAME_GGML_BUILD_CLI   "Build game_ggml_cli executable"   ON)
 option(GAME_GGML_BUILD_TESTS "Build unit tests (requires GoogleTest via FetchContent)" OFF)
 option(GAME_GGML_BUILD_WASM  "Build the WASM module (requires emcmake)" OFF)
+option(GAME_GGML_WASM_THREADS "Enable Emscripten threads (-pthread + SharedArrayBuffer)" OFF)
 
 # On Apple, default to Metal backend on. Use GAME_GGML_METAL to override.
 if(APPLE)
@@ -37,6 +38,11 @@ if(EMSCRIPTEN)
     set(GGML_BLAS              OFF CACHE BOOL "" FORCE)
     # WebAssembly SIMD128 (stable across Chrome/Safari/Firefox since 2022).
     add_compile_options(-msimd128)
+    if(GAME_GGML_WASM_THREADS)
+        # Global -pthread so ggml's own CPU backend compiles with threading.
+        add_compile_options(-pthread)
+        add_link_options(-pthread)
+    endif()
 endif()
 
 # -----------------------------------------------------------------------------
@@ -171,7 +177,8 @@ if(GAME_GGML_BUILD_WASM)
         OUTPUT_NAME "game_ggml"
         SUFFIX ".js"
     )
-    target_link_options(game_ggml_wasm PRIVATE
+
+    set(_wasm_link_opts
         "-lembind"
         "-sMODULARIZE=1"
         "-sEXPORT_NAME=createGameGGML"
@@ -185,6 +192,24 @@ if(GAME_GGML_BUILD_WASM)
         "-sFORCE_FILESYSTEM=1"
         "-sNO_EXIT_RUNTIME=1"
     )
+
+    if(GAME_GGML_WASM_THREADS)
+        # Threads require: -pthread at both compile + link, SharedArrayBuffer
+        # (implied by -pthread), and a cross-origin-isolated page (COOP/COEP
+        # headers sent by the host — see web-demo/serve.py or the COI service
+        # worker for GitHub Pages).
+        target_compile_options(game_ggml_wasm PRIVATE -pthread)
+        # Also pass -pthread through ggml's own targets so its thread calls
+        # compile.  ggml reads the `ggml-*` target link properties so we rely
+        # on the global add_compile_options below being active as well.
+        list(APPEND _wasm_link_opts
+            "-pthread"
+            "-sPTHREAD_POOL_SIZE=8"        # pre-allocate 8 WebWorkers; ggml picks how many to use via setNumThreads
+            "-sSHARED_MEMORY=1"
+        )
+    endif()
+
+    target_link_options(game_ggml_wasm PRIVATE ${_wasm_link_opts})
 endif()
 
 # -----------------------------------------------------------------------------

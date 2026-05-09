@@ -65,6 +65,8 @@ public:
 
     std::string arch() const { return model_->config().architecture; }
 
+    void set_num_threads(int n) { model_->set_n_threads(n); }
+
 private:
     std::unique_ptr<game_ggml::Model> model_;
 };
@@ -82,6 +84,7 @@ std::string ggml_version_str() { return game_ggml::ggml_version_string(); }
 EMSCRIPTEN_BINDINGS(game_ggml) {
     class_<ModelJs>("Model")
         .function("infer",             &ModelJs::infer)
+        .function("setNumThreads",     &ModelJs::set_num_threads)
         .function("sampleRate",        &ModelJs::sample_rate)
         .function("nMels",             &ModelJs::n_mels)
         .function("embeddingDim",      &ModelJs::embedding_dim)

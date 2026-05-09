@@ -43,6 +43,12 @@ public:
     InferResult infer(const float * waveform, std::size_t n_samples,
                       const InferParams & params);
 
+    // When the backend is the CPU backend (always true for WASM, and when
+    // Metal/CUDA/Vulkan are disabled on native), use `n` worker threads for
+    // matmul / conv.  No-op for GPU backends.  Call at any point after
+    // `load`; subsequent `infer` calls observe the new value.
+    void set_n_threads(int n);
+
     // Forward declaration of the internal state — kept opaque to consumers
     // so the public ABI doesn't depend on ggml's layout.
     struct Impl;

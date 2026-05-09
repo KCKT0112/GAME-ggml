@@ -1,0 +1,106 @@
+name: Deploy to GitHub Pages
+
+# On every push to main, rebuild the WASM module, download the converted GGUFs
+# from the `model-assets` release tag, stage everything into `web-demo/` and
+# publish to `gh-pages` branch.
+#
+# How to provide the GGUF files:
+#   1. Run `python scripts/convert_pt_to_gguf.py --dtype q8_0 -o game_small_q8_0.gguf`
+#      (plus f16 / f32 if desired) from a local machine.
+#   2. Create a GitHub release tagged `model-assets` and attach the .gguf files.
+#   3. This workflow fetches them on every deploy.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "cmake/**"
+      - "CMakeLists.txt"
+      - "web-demo/**"
+      - ".github/workflows/deploy-ghpages.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: emsdk-cache
+
+      - name: Cache CMake FetchContent
+        uses: actions/cache@v4
+        with:
+          path: build-wasm-mt/_deps
+          key: wasm-deps-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Configure (threaded WASM)
+        run: |
+          emcmake cmake -S . -B build-wasm-mt \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CCACHE=OFF \
+            -DGAME_GGML_WASM_THREADS=ON
+
+      - name: Build
+        run: cmake --build build-wasm-mt -j
+
+      - name: Stage artifacts
+        run: |
+          set -e
+          mkdir -p web-demo/assets
+          cp build-wasm-mt/bin/game_ggml.{js,wasm} web-demo/
+          # Worker file for threading (only present on threaded builds).
+          [ -f build-wasm-mt/bin/game_ggml.worker.js ] \
+            && cp build-wasm-mt/bin/game_ggml.worker.js web-demo/ \
+            || true
+          ls -la web-demo/
+
+      - name: Download GGUF assets from `model-assets` release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          for dt in q8_0 f16 f32; do
+            url=$(gh release view model-assets --json assets \
+                    -q '.assets[] | select(.name=="game_small_'"$dt"'.gguf") | .url' \
+                    || echo "")
+            if [ -n "$url" ]; then
+              echo "Fetching $url"
+              gh release download model-assets -p "game_small_${dt}.gguf" -D web-demo/assets/
+            else
+              echo "::warning::game_small_${dt}.gguf not attached to model-assets release — demo will 404 on that option"
+            fi
+          done
+          ls -la web-demo/assets/ || true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web-demo
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
