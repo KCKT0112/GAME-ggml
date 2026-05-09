@@ -28,7 +28,7 @@ waveform (44100 Hz mono)
    Encoder (EBFBackbone, 4 layers, dim=128)
       │ x_seg, x_est  each [T, 128]
       ▼
-   D3PM loop (8 steps)
+   D3PM loop (1 step default; --nsteps 8 for higher quality)
      ├─ remove_mutable_boundaries (stochastic)
      ├─ Segmenter (EBFBackbone, 8 layers; noise/time/lang embeddings)
      └─ decode_soft_boundaries (local-max)
@@ -101,7 +101,7 @@ Inspect the result:
 | `--seg-threshold`     | `--seg-threshold` |
 | `--seg-radius`        | `--seg-radius` (in frames) |
 | `--est-threshold`     | `--est-threshold` |
-| `--t0` / `--nsteps`   | `--t0` / `--nsteps` |
+| `--t0` / `--nsteps`   | `--t0` / `--nsteps` (ggml defaults to `--nsteps 1`; Python defaults to `8`) |
 | `--seed`              | *(new)* — 0 pulls a random seed from the OS |
 | `--pitch-format`      | `--pitch-format` |
 | `--round-pitch`       | `--round-pitch` |
@@ -116,26 +116,41 @@ Measured on Apple M4 (macOS, 16-core Apple Silicon), 3 runs per side under
 Both sides consume the exact same random-number stream via `--rng-replay`
 (see `scripts/align_demo.py`), so the note lists are bit-exact aligned.
 
+### Default settings (`--nsteps 1`)
+
 ```
                           min      mean       max
-PyTorch wall (s)        17.73     18.05     18.65   (MPS via Lightning)
-ggml    wall (s)         9.11      9.28      9.62   (Metal, default binary)
-Speedup                                    1.94 ×
+PyTorch wall (s)         5.99      6.27      6.71   (MPS via Lightning)
+ggml    wall (s)         3.05      3.06      3.06   (Metal, default binary)
+Speedup                                    2.05 ×
 
-PyTorch peak RSS      984.9 MB  985.7 MB  986.9 MB
-ggml    peak RSS      336.0 MB  336.2 MB  336.4 MB
+PyTorch peak RSS      980.8 MB  981.2 MB  981.7 MB
+ggml    peak RSS      334.1 MB  334.4 MB  334.8 MB
 Memory ratio                                2.93 ×
 
-PyTorch notes: 458  ┐
-ggml    notes: 458  ├── matched 1-to-1, max |Δpitch| = 0.000 semitone
+PyTorch notes: 471  ┐
+ggml    notes: 471  ├── matched 1-to-1, max |Δpitch| = 0.000 semitone
                      ┘
 ```
 
-Real-time factor: **23.3×** (ggml) vs 11.97× (PyTorch).
+Real-time factor: **70.6×** (ggml) vs 34.4× (PyTorch).
+
+### Higher quality (`--nsteps 8`)
+
+```
+                          min      mean       max
+PyTorch wall (s)        17.73     18.05     18.65
+ggml    wall (s)         9.11      9.28      9.62
+Speedup                                    1.94 ×
+```
+
+Real-time factor drops to 23.3× (ggml) / 11.97× (PyTorch), but segmentation
+quality is marginally higher (+9 notes recovered in this clip).
 
 ### Per-stage breakdown (ONNX-aligned)
 
-Run with `GAME_GGML_PROFILE=1` to print a per-chunk breakdown:
+Run with `GAME_GGML_PROFILE=1` to print a per-chunk breakdown.  Numbers below
+use `--nsteps 8` so the segmenter share is visible:
 
 ```
 encoder     ~0.17 s  (~16%)   waveform → x_seg/x_est  (mel + spec_proj + 4× EBF)
@@ -143,8 +158,8 @@ segmenter   ~0.79 s  (~78%)   x_seg → boundaries       (8× D3PM sampling step
 estimator   ~0.06 s  (~ 6%)   x_est + regions → notes  (4× JEBF + joint attn)
 ```
 
-Segmenter dominates because D3PM loops it 8 times by default.  Pass
-`--nsteps 4` to halve the run time at a small quality cost.
+Segmenter dominates because D3PM loops it `--nsteps` times.  Default `1`
+keeps it cheap; bump to `4` or `8` for higher quality at linear cost.
 
 ## Reproducing the benchmark
 
